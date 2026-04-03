@@ -27,7 +27,7 @@ menu() {
     shift
     local options=("$@")
     
-    dialog --clear --title "$title" --menu "Use arrow keys to navigate" 15 60 8 "${options[@]}" 2>&1 >/dev/tty
+    dialog --clear --title "$title" --menu "Use arrow keys to navigate" 15 60 8 "${options[@]}" 3>&1 1>&2 2>&3
 }
 
 yesno() {
@@ -35,11 +35,11 @@ yesno() {
 }
 
 inputbox() {
-    dialog --clear --title "$1" --inputbox "$2" 10 60 2>&1 >/dev/tty
+    dialog --clear --title "$1" --inputbox "$2" 10 60 3>&1 1>&2 2>&3
 }
 
 passwordbox() {
-    dialog --clear --title "$1" --passwordbox "$2" 10 60 2>&1 >/dev/tty
+    dialog --clear --title "$1" --passwordbox "$2" 10 60 3>&1 1>&2 2>&3
 }
 
 msgbox() {
@@ -258,12 +258,13 @@ show_summary() {
 }
 
 cleanup() {
+    clear
     umount -R /mnt 2>/dev/null || true
     swapoff -a 2>/dev/null || true
 }
 
 main() {
-    trap cleanup EXIT
+    trap cleanup EXIT ERR
     
     check_root
     check_uefi
