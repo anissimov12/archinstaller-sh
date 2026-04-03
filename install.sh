@@ -22,32 +22,93 @@ check_uefi() {
     [[ ! -d /sys/firmware/efi ]] && { echo "UEFI mode required"; exit 1; }
 }
 
+print_header() {
+    clear
+    echo "================================"
+    echo "  Arch Linux Installer"
+    echo "================================"
+    echo ""
+}
+
 menu() {
     local title="$1"
     shift
+    local prompt="$2"
+    shift 2
     local options=("$@")
     
-    dialog --clear --title "$title" --menu "Use arrow keys to navigate" 15 60 8 "${options[@]}" 3>&1 1>&2 2>&3
+    print_header
+    echo "$title"
+    echo ""
+    
+    local i=1
+    while [[ $i -le ${#options[@]} ]]; do
+        echo "  $((i/2 + 1)). ${options[$((i-1))]}"
+        i=$((i + 2))
+    done
+    echo ""
+    read -rp "Select [1-$((${#options[@]}/2))]: " choice
+    
+    local idx=$(( (choice - 1) * 2 ))
+    echo "${options[$idx]}"
 }
 
 yesno() {
-    dialog --clear --title "$1" --yesno "$2" 8 60
+    local title="$1"
+    local msg="$2"
+    
+    print_header
+    echo "$title"
+    echo ""
+    echo "$msg"
+    echo ""
+    read -rp "Continue? [y/N]: " answer
+    [[ "$answer" =~ ^[Yy]$ ]]
 }
 
 inputbox() {
-    dialog --clear --title "$1" --inputbox "$2" 10 60 3>&1 1>&2 2>&3
+    local title="$1"
+    local prompt="$2"
+    
+    print_header
+    echo "$title"
+    echo ""
+    read -rp "$prompt " value
+    echo "$value"
 }
 
 passwordbox() {
-    dialog --clear --title "$1" --passwordbox "$2" 10 60 3>&1 1>&2 2>&3
+    local title="$1"
+    local prompt="$2"
+    
+    print_header
+    echo "$title"
+    echo ""
+    read -rsp "$prompt " value
+    echo ""
+    echo "$value"
 }
 
 msgbox() {
-    dialog --clear --title "$1" --msgbox "$2" 10 60
+    local title="$1"
+    local msg="$2"
+    
+    print_header
+    echo "$title"
+    echo ""
+    echo "$msg"
+    echo ""
+    read -rp "Press Enter to continue..."
 }
 
-gauge() {
-    dialog --clear --title "$1" --gauge "$2" 8 60 0
+progress() {
+    local title="$1"
+    local msg="$2"
+    
+    print_header
+    echo "$title"
+    echo ""
+    echo "$msg"
 }
 
 select_disk() {
@@ -58,19 +119,25 @@ select_disk() {
         disks+=("$name" "$size")
     done < <(lsblk -dpnoNAME,SIZE | grep -v "loop\|rom")
     
-    DISK=$(menu "Disk Selection" "${disks[@]}")
+    DISK=$(menu "Disk Selection" "Choose installation disk:" "${disks[@]}")
     [[ -z "$DISK" ]] && exit 1
     
-    local disk_info=$(lsblk -o NAME,SIZE,TYPE,MOUNTPOINT "$DISK" | tail -n +2)
-    yesno "Confirm Disk" "Selected: $DISK\n\n$disk_info\n\nWARNING: All data will be destroyed!" || exit 1
+    print_header
+    echo "Selected Disk: $DISK"
+    echo ""
+    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT "$DISK"
+    echo ""
+    echo "WARNING: All data will be destroyed!"
+    echo ""
+    yesno "Confirm" "Proceed with $DISK?" || exit 1
 }
 
 select_filesystem() {
-    FILESYSTEM=$(menu "Filesystem Type" \
-        "ext4" "Stable, widely supported" \
-        "btrfs" "Modern, snapshots, compression" \
-        "xfs" "High performance, large files" \
-        "f2fs" "Flash-optimized (SSD)")
+    FILESYSTEM=$(menu "Filesystem Type" "Choose filesystem:" \
+        "ext4" "Stable" \
+        "btrfs" "Snapshots" \
+        "xfs" "Performance" \
+        "f2fs" "SSD")
     [[ -z "$FILESYSTEM" ]] && exit 1
 }
 
@@ -79,19 +146,20 @@ configure_partitions() {
     
     yesno "Enable Swap" "Create swap partition?" && {
         ENABLE_SWAP=true
-        SWAP_SIZE=$(inputbox "Swap Size" "Enter swap size (e.g., 4G, 8G):" || echo "4G")
+        SWAP_SIZE=$(inputbox "Swap Size" "Size (e.g., 4G, 8G):")
+        [[ -z "$SWAP_SIZE" ]] && SWAP_SIZE="4G"
     }
     
     if $SEPARATE_HOME; then
-        ROOT_SIZE=$(inputbox "Root Size" "Enter root partition size (e.g., 50G):" || echo "50G")
+        ROOT_SIZE=$(inputbox "Root Size" "Size (e.g., 50G):")
+        [[ -z "$ROOT_SIZE" ]] && ROOT_SIZE="50G"
     fi
 }
 
 wipe_disk() {
-    echo "0" | gauge "Wiping Disk" "Securely wiping partition table..."
+    progress "Wiping Disk" "Clearing partition table..."
     wipefs -af "$DISK" >/dev/null 2>&1
     sgdisk -Z "$DISK" >/dev/null 2>&1
-    echo "100" | gauge "Wiping Disk" "Complete"
     sleep 1
 }
 
@@ -100,36 +168,32 @@ create_partitions() {
     local efi_end=$((1 + ${EFI_SIZE%M}))
     local swap_end=$efi_end
     local root_end=$swap_end
-    local home_end=$root_end
     
-    echo "10" | gauge "Partitioning" "Creating GPT table..."
+    progress "Partitioning" "Creating GPT table..."
     parted -s "$DISK" mklabel gpt
     
-    echo "20" | gauge "Partitioning" "Creating EFI partition..."
+    progress "Partitioning" "Creating EFI partition..."
     parted -s "$DISK" mkpart ESP fat32 1MiB ${EFI_SIZE}
     parted -s "$DISK" set 1 esp on
     
     if $ENABLE_SWAP; then
-        echo "40" | gauge "Partitioning" "Creating swap partition..."
+        progress "Partitioning" "Creating swap partition..."
         swap_end=$((efi_end + ${SWAP_SIZE%G} * 1024))
         parted -s "$DISK" mkpart primary linux-swap ${efi_end}MiB ${swap_end}MiB
         current=$((current + 1))
     fi
     
-    echo "60" | gauge "Partitioning" "Creating root partition..."
+    progress "Partitioning" "Creating root partition..."
     if $SEPARATE_HOME && [[ -n "$ROOT_SIZE" ]]; then
         root_end=$((swap_end + ${ROOT_SIZE%G} * 1024))
         parted -s "$DISK" mkpart primary $FILESYSTEM ${swap_end}MiB ${root_end}MiB
         current=$((current + 1))
         
-        echo "80" | gauge "Partitioning" "Creating home partition..."
+        progress "Partitioning" "Creating home partition..."
         parted -s "$DISK" mkpart primary $FILESYSTEM ${root_end}MiB 100%
     else
         parted -s "$DISK" mkpart primary $FILESYSTEM ${swap_end}MiB 100%
     fi
-    
-    echo "100" | gauge "Partitioning" "Complete"
-    sleep 1
     
     partprobe "$DISK"
     sleep 2
@@ -138,18 +202,18 @@ create_partitions() {
 format_partitions() {
     local part_num=1
     
-    echo "10" | gauge "Formatting" "Formatting EFI partition..."
+    progress "Formatting" "EFI partition..."
     mkfs.fat -F32 "${DISK}${part_num}" >/dev/null 2>&1
     part_num=$((part_num + 1))
     
     if $ENABLE_SWAP; then
-        echo "30" | gauge "Formatting" "Creating swap..."
+        progress "Formatting" "Swap partition..."
         mkswap "${DISK}${part_num}" >/dev/null 2>&1
         swapon "${DISK}${part_num}"
         part_num=$((part_num + 1))
     fi
     
-    echo "50" | gauge "Formatting" "Formatting root partition..."
+    progress "Formatting" "Root partition..."
     case $FILESYSTEM in
         ext4) mkfs.ext4 -F "${DISK}${part_num}" >/dev/null 2>&1 ;;
         btrfs) mkfs.btrfs -f "${DISK}${part_num}" >/dev/null 2>&1 ;;
@@ -159,7 +223,7 @@ format_partitions() {
     part_num=$((part_num + 1))
     
     if $SEPARATE_HOME; then
-        echo "80" | gauge "Formatting" "Formatting home partition..."
+        progress "Formatting" "Home partition..."
         case $FILESYSTEM in
             ext4) mkfs.ext4 -F "${DISK}${part_num}" >/dev/null 2>&1 ;;
             btrfs) mkfs.btrfs -f "${DISK}${part_num}" >/dev/null 2>&1 ;;
@@ -168,7 +232,6 @@ format_partitions() {
         esac
     fi
     
-    echo "100" | gauge "Formatting" "Complete"
     sleep 1
 }
 
@@ -204,11 +267,8 @@ install_base() {
     [[ "$FILESYSTEM" == "xfs" ]] && packages="$packages xfsprogs"
     [[ "$FILESYSTEM" == "f2fs" ]] && packages="$packages f2fs-tools"
     
-    pacstrap /mnt $packages 2>&1 | \
-        stdbuf -oL tr '\r' '\n' | \
-        grep -o '[0-9]\+%' | \
-        sed 's/%//' | \
-        dialog --clear --title "Installing Base System" --gauge "Installing packages..." 8 60 0
+    progress "Installing" "Base system packages..."
+    pacstrap /mnt $packages
 }
 
 generate_fstab() {
@@ -234,31 +294,35 @@ EOF
 }
 
 get_user_input() {
-    HOSTNAME=$(inputbox "Hostname" "Enter hostname:")
+    HOSTNAME=$(inputbox "Hostname" "Hostname:")
     [[ -z "$HOSTNAME" ]] && exit 1
     
-    USERNAME=$(inputbox "Username" "Enter username:")
+    USERNAME=$(inputbox "Username" "Username:")
     [[ -z "$USERNAME" ]] && exit 1
     
-    PASSWORD=$(passwordbox "Password" "Enter password:")
+    PASSWORD=$(passwordbox "Password" "Password:")
     [[ -z "$PASSWORD" ]] && exit 1
     
-    local password2=$(passwordbox "Password" "Confirm password:")
+    local password2=$(passwordbox "Password" "Confirm:")
     [[ "$PASSWORD" != "$password2" ]] && { msgbox "Error" "Passwords do not match"; exit 1; }
 }
 
 show_summary() {
-    local summary="Disk: $DISK\nFilesystem: $FILESYSTEM\n"
-    summary+="Separate /home: $SEPARATE_HOME\n"
-    summary+="Swap: $ENABLE_SWAP"
-    $ENABLE_SWAP && summary+=" ($SWAP_SIZE)"
-    summary+="\nHostname: $HOSTNAME\nUsername: $USERNAME"
-    
-    yesno "Installation Summary" "$summary\n\nProceed with installation?" || exit 1
+    print_header
+    echo "Installation Summary"
+    echo ""
+    echo "  Disk: $DISK"
+    echo "  Filesystem: $FILESYSTEM"
+    echo "  Separate /home: $SEPARATE_HOME"
+    echo -n "  Swap: $ENABLE_SWAP"
+    $ENABLE_SWAP && echo " ($SWAP_SIZE)" || echo ""
+    echo "  Hostname: $HOSTNAME"
+    echo "  Username: $USERNAME"
+    echo ""
+    yesno "Confirm" "Proceed with installation?" || exit 1
 }
 
 cleanup() {
-    clear
     umount -R /mnt 2>/dev/null || true
     swapoff -a 2>/dev/null || true
 }
@@ -268,8 +332,6 @@ main() {
     
     check_root
     check_uefi
-    
-    command -v dialog >/dev/null || pacman -Sy --noconfirm dialog
     
     select_disk
     select_filesystem
@@ -285,8 +347,7 @@ main() {
     generate_fstab
     configure_system
     
-    clear
-    msgbox "Installation Complete" "System installed successfully!\n\nPress OK to reboot."
+    msgbox "Complete" "Installation successful! System will reboot."
     reboot
 }
 
